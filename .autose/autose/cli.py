@@ -471,7 +471,10 @@ def cmd_local(a: argparse.Namespace) -> int:
 def cmd_review_local(a: argparse.Namespace) -> int:
     """E1 runner: review a seeded PR (``issue.md`` + ``diff.patch``) on a throwaway worktree."""
     pr_dir = Path(a.pr_dir)
-    issue = parse_issue_file(pr_dir / "issue.md", a.issue or 0)
+    issue_no = a.issue
+    if not issue_no and (pr_dir / "label.json").exists():  # experiment/seeded_prs/<id>/label.json
+        issue_no = int(json.loads((pr_dir / "label.json").read_text()).get("issue") or 0)
+    issue = parse_issue_file(pr_dir / "issue.md", issue_no or 0)
     repo = Path(a.repo).resolve()
     base = checks.git(repo, "rev-parse", "HEAD").strip()
     tmp = Path(tempfile.mkdtemp(prefix="autose-review-"))
