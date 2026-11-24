@@ -89,6 +89,7 @@ class RoleConfig:
     schema: str = ""
     prompt: str = ""
     extra_args: list[str] = field(default_factory=list)
+    backend: str = ""   # claude | codex | agy (ADR-014); filled in by role()
 
 
 SONNET = "claude-sonnet-5-5"
@@ -121,10 +122,36 @@ _ROLES: dict[str, RoleConfig] = {
     # E1 variant B: same tools, same schema, builder model (experiment/variants.md).
     "reviewer_friendly": RoleConfig("reviewer_friendly", SONNET, "high", ["Read", "Grep", "Glob", "Write", "Bash"],
                                     READ_TOOLS + ["Write"], 2.00, 60, schema="review"),
+    # Find -> Verify (ADR-015): re-checks one blocking reviewer finding in a fresh, read-only context.
+    "verifier": RoleConfig("verifier", OPUS, "medium", READ_TOOLS, READ_TOOLS, 0.50, 25, schema="verify"),
     # E2 variant B: Developer + Tester in one context.
     "builder": RoleConfig("builder", SONNET, "high", WRITE_TOOLS, READ_TOOLS + ["Edit", "Write"] + _DEV_BASH,
                           2.50, 80, schema="builder"),
 }
+
+
+#: ADR-014: the agent harness is chosen per role. ``codex`` (ChatGPT subscription) is the default.
+#: Override globally with ``AUTOSE_BACKEND`` or per role with ``AUTOSE_BACKEND_<ROLE>``.
+BACKENDS = ("claude", "codex", "agy")
+DEFAULT_BACKEND = "codex"
+BUILDER_GPT = "gpt-6.1-sol"     # builders: the strongest Codex model on the subscription
+SMALL_GPT = "gpt-6-luna"        # judge: small and fast
+REVIEW_GPT = "gpt-6-astra"      # reviewer/verifier: a *different* model from the builders (ADR-008)
+#: Default model per backend and role. ``claude`` keeps the original §7 table.
+BACKEND_MODELS: dict[str, dict[str, str]] = {
+    # First live run (2026-11-24): gpt-6-luna as judge failed a testable spec twice on test-layout
+    # nitpicks, so the judge uses the builder model at low effort (results/runs.md, ADR-014 note).
+    "codex": {"judge": BUILDER_GPT, "reviewer": REVIEW_GPT, "verifier": REVIEW_GPT, "*": BUILDER_GPT},
+    "agy": {"judge": "gemini-3.8-flash-low", "reviewer": "claude-opus-4-6-thinking",
+            "verifier": "claude-opus-4-6-thinking", "*": "gemini-3.8-flash-high"},
+}
+
+
+def backend_for(name: str) -> str:
+    b = os.environ.get(f"AUTOSE_BACKEND_{name.upper()}") or os.environ.get("AUTOSE_BACKEND") or DEFAULT_BACKEND
+    if b not in BACKENDS:
+        raise ValueError(f"unknown backend {b!r} for role {name} (expected one of {BACKENDS})")
+    return b
 
 
 def role(name: str) -> RoleConfig:
@@ -136,10 +163,14 @@ def role(name: str) -> RoleConfig:
         # Empty values count as unset: Actions passes `${{ vars.X }}` as "" when X is undefined.
         return os.environ.get(f"AUTOSE_{field_name}_{key}") or str(default)
 
+    backend = backend_for(name)
+    table = BACKEND_MODELS.get(backend)
+    default_model = (table.get(name) or table["*"]) if table else base.model
     return replace(
         base,
+        backend=backend,
         prompt=base.prompt or name,
-        model=env("MODEL", base.model),
+        model=env("MODEL", default_model),
         effort=env("EFFORT", base.effort),
         budget_usd=float(env("BUDGET", base.budget_usd)),
         max_turns=int(env("MAX_TURNS", base.max_turns)),
@@ -153,14 +184,22 @@ ROLE_NAMES = list(_ROLES)
 REWORK_ROLES = {"S2": ["architect", "developer", "tester"], "S3": ["developer", "tester"], "S4": ["tester"]}
 
 
-def review_reserve() -> float:
-    """Budget build/rework must leave untouched: one Reviewer cap (ADR-006 reservation rule).
+def verify_enabled() -> bool:
+    """The review verification pass (ADR-015) runs unless ``AUTOSE_VERIFY=0``."""
+    return (os.environ.get("AUTOSE_VERIFY") or "1").strip() != "0"
 
-    The invalid-review re-ask is *not* reserved: it runs only if it still fits under the run cap,
-    otherwise the review stays invalid and the run ends ``awaiting-human`` (ADR-013). Reserving it
-    too would make the first ``approach`` send-back unaffordable after a typical run ($2.85 + $7.25).
+
+def review_reserve() -> float:
+    """Budget build/rework must leave untouched: one Reviewer cap plus one Verifier cap (ADR-006, ADR-015).
+
+    The Verifier cap is included only while verification is enabled. Only one verifier call is
+    reserved; further ones (one per blocking finding) run only if they still fit under the run cap,
+    and a finding that could not be verified keeps blocking. The invalid-review re-ask is *not*
+    reserved either: it runs only if it still fits, otherwise the review stays invalid and the run
+    ends ``awaiting-human`` (ADR-013). Reserving it too would make the first ``approach`` send-back
+    unaffordable after a typical run ($2.85 + $7.75).
     """
-    return role("reviewer").budget_usd
+    return role("reviewer").budget_usd + (role("verifier").budget_usd if verify_enabled() else 0.0)
 
 
 #: Variables never passed to agents or to subprocesses the orchestrator runs on agent-written code
