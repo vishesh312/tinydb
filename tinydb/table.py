@@ -729,6 +729,23 @@ class Table:
 
         return len(self._read_table())
 
+    def __contains__(self, item: object) -> bool:
+        """
+        Support ``doc_id in table`` and ``query in table``.
+
+        An ``int`` is treated as a document ID, a callable as a query.
+        """
+        if isinstance(item, int):
+            return self.contains(doc_id=item)
+
+        if callable(item):
+            return self.contains(item)
+
+        raise TypeError(
+            'Use a document ID (int) or a query with the "in" operator, '
+            'not {}'.format(type(item).__name__)
+        )
+
     def __iter__(self) -> Iterator[Document]:
         """
         Iterate over all documents stored in the table.
