@@ -40,6 +40,8 @@ NOTIONAL_PRICES: dict[str, tuple[float, float, float]] = {
     "gpt-6.1-sol": (2.50, 0.25, 15.00),
     "gpt-6-sol": (2.50, 0.25, 15.00),
     "gpt-6-luna": (0.75, 0.075, 4.50),
+    "gpt-6.1-terra": (1.25, 0.125, 7.50),  # assumed: between sol and luna
+    "gpt-5.6-terra": (1.25, 0.125, 7.50),
     "gpt-6-astra": (2.50, 0.25, 15.00),
     "claude-opus-4-6-thinking": (5.00, 0.50, 25.00),
     "claude-sonnet-4-6": (3.00, 0.30, 15.00),

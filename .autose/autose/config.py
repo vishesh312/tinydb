@@ -134,9 +134,9 @@ _ROLES: dict[str, RoleConfig] = {
 #: Override globally with ``AUTOSE_BACKEND`` or per role with ``AUTOSE_BACKEND_<ROLE>``.
 BACKENDS = ("claude", "codex", "agy")
 DEFAULT_BACKEND = "codex"
-BUILDER_GPT = "gpt-6.1-sol"     # builders: the strongest Codex model on the subscription
-SMALL_GPT = "gpt-6-luna"        # judge: small and fast
-REVIEW_GPT = "gpt-6-astra"      # reviewer/verifier: a *different* model from the builders (ADR-008)
+BUILDER_GPT = "gpt-6.1-terra"   # builders: mid-size model, lighter on the shared ChatGPT quota (ADR-014 note 2)
+SMALL_GPT = "gpt-6-luna"        # smallest model: reviewer/verifier since 2026-11-24 (quota)
+REVIEW_GPT = SMALL_GPT          # reviewer/verifier: still a *different* model from the builders (ADR-008)
 #: Default model per backend and role. ``claude`` keeps the original §7 table.
 BACKEND_MODELS: dict[str, dict[str, str]] = {
     # First live run (2026-11-24): gpt-6-luna as judge failed a testable spec twice on test-layout
