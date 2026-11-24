@@ -1,0 +1,58 @@
+# CI for the fork (replaces upstream ci-workflow.yml). Also called by autose-round.yml on the
+# AutoSE head SHA, because pushes made with GITHUB_TOKEN do not trigger workflows; the result
+# is then posted as the commit status `autose-ci` (DESIGN §2 S5, §10 Actions limits).
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+      sha:
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Pending status
+        if: inputs.sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh api "repos/${{ github.repository }}/statuses/${{ inputs.sha }}" -X POST
+          -f state=pending -f context=autose-ci -f description="CI running"
+          -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e . pytest pytest-cov pytest-pycodestyle pytest-mypy mypy pyyaml types-PyYAML
+      - name: Tests
+        run: python -m pytest
+      - name: Types (mirrors upstream `pytest --mypy -m mypy tinydb tests`)
+        run: python -m mypy tinydb tests
+      - name: Report commit status
+        if: always() && inputs.sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh api "repos/${{ github.repository }}/statuses/${{ inputs.sha }}" -X POST
+          -f state=${{ job.status == 'success' && 'success' || 'failure' }} -f context=autose-ci
+          -f description="CI ${{ job.status }}"
+          -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

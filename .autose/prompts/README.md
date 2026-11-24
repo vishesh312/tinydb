@@ -1,0 +1,41 @@
+# AutoSE agent prompts
+
+Each agent runs as `claude -p --bare` with `<role>.system.md` passed via `--append-system-prompt-file` and `<role>.task.md` (after placeholder substitution) as the `-p` prompt. The final answer is constrained by `--json-schema` to the contracts in `architecture/DESIGN.md` §14, and validated again by the orchestrator, which renders the `.md` artifacts from the JSON (using the `*_md` field where the contract has one). For the Analyst, the orchestrator appends `workflow/skills/requirements-spec/SKILL.md` (a verbatim copy of the A1 skill) after `analyst.system.md`.
+
+System prompts contain no placeholders. Task templates use `{{NAME}}` placeholders, filled by plain string replacement.
+
+## Prompt files
+
+| Files | Role / stage | Variables (task template) | Deliberately excluded, and why (DESIGN §4) |
+|---|---|---|---|
+| `analyst.system.md` + skill, `analyst.task.md` | Analyst, S1 | `ISSUE_NUMBER`, `ISSUE_TITLE`, `ISSUE_BODY`, `MAINTAINER_COMMENTS`, `PREVIOUS_FEEDBACK` | `ARCHITECTURE.md` (the prompt tells it not to read it): the spec stays solution-independent so the Architect chooses and the Reviewer can judge the approach. Comments from users without write access (filtered by the orchestrator): they are not stakeholders and are the easiest injection vector. Other issues/PRs. |
+| `judge.system.md`, `judge.task.md` | Testability judge, S1 check | `ACCEPTANCE_CRITERIA_JSON` | Everything except the ACs: the issue, the requirements and the repo. It rates whether a criterion is decidable as written, so context that would let it "fill in" a missing value is withheld on purpose. No tools. |
+| `architect.system.md`, `architect.task.md` | Architect, S2 | `ISSUE_NUMBER`, `SPEC_MD`, `LOOPBACK_CONTEXT`, `PREVIOUS_FEEDBACK` | The raw issue (it gets the distilled, checked spec, keeping untrusted text away from the planner) and the Analyst transcript. |
+| `developer.system.md`, `developer.task.md` | Developer, S3 | `ISSUE_NUMBER`, `DESIGN_MD`, `SPEC_MD`, `RETRY_CONTEXT`, `FORBIDDEN_PATHS` | The raw issue (it has write tools, so it only sees pipeline-derived text); the Tester's reasoning; earlier Developer transcripts (each attempt is a fresh context and `RETRY_CONTEXT` carries only facts about the last failure: failing test ids + assertion output ≤ 4 KB, or reviewer `code` findings). |
+| `tester.system.md`, `tester.task.md` | Tester, S4 | `ISSUE_NUMBER`, `TEST_FILE`, `ACCEPTANCE_CRITERIA_MD`, `PUBLIC_API_MD`, `CONTESTED_TESTS`, `REVIEW_FINDINGS` (the reviewer's blocking `tests` findings on a send-back to S4; `none` otherwise) | `dev_notes.json`, the Developer transcript and the rest of `design.md`: tests must encode the spec, not the implementer's beliefs. It still sees the implementation in the repo (it must import it), so the prompt tells it to derive expected values from the ACs before running code. |
+| `reviewer.system.md`, `reviewer.task.md` | Independent Reviewer, S6 | `ISSUE_NUMBER`, `ISSUE_TITLE`, `ISSUE_BODY`, `MAINTAINER_COMMENTS`, `DIFF`, `BASE_REF`, `PROBE_DIR`, `ROUND`, `PREVIOUS_FINDINGS` | `spec.md`, `design.md`, `dev_notes.json`, `test_report.md`, `pr.md`, all transcripts, GitHub access. Its only "previous" input is its **own** last-round findings. It derives expected behaviour from the issue, so a misreading by the Analyst is not silently inherited. |
+| `reviewer_friendly.system.md`, `reviewer_friendly.task.md` | E1 variant B reviewer | reviewer variables + `SPEC_MD`, `DESIGN_MD`, `DEV_NOTES`, `TEST_REPORT` | Nothing beyond transcripts and GitHub access; this is the "shared context" condition of E1. |
+| `builder.system.md`, `builder.task.md` | E2 variant B Builder (S3+S4 in one context) | `ISSUE_NUMBER`, `DESIGN_MD`, `SPEC_MD`, `TEST_FILE`, `RETRY_CONTEXT`, `FORBIDDEN_PATHS` | Same exclusions as the Developer. Output is `{"dev_notes": {…}, "test_map": {…}}`; `contested_tests` is always empty. |
+
+## What each experiment variant changes
+
+- **E1 (ADR-008), `reviewer_friendly`.** Changes context (it also gets spec, design, dev notes and test report) and stance (a neutral "careful colleague" prompt: no issue-first derivation of expected behaviour, no minimum of three hypotheses, no mandatory probe). It keeps, on purpose, the same category and severity definitions (routing must mean the same thing), the same evidence rules, the same injection handling (safety is not the variable under test) and the same output schema. It is a fair, competent prompt, not a strawman: the comparison is "adversarial and isolated" against "informed and neutral". Model choice (Sonnet vs Opus) is set by the orchestrator, not the prompt.
+- **E2 (ADR-001), `builder`.** Instructions are the union of `developer.system.md` and `tester.system.md`, worded the same wherever possible, including "derive expected values from the ACs". The only variable is whether one context writes both code and tests. Neither variant prompt mentions that it is an experiment, so the model's behaviour is not changed by knowing it is being compared.
+
+## Design notes
+
+**Anti-injection.**
+- Untrusted text (issue title/body, maintainer comments, diff) is always wrapped in `<untrusted_issue>`, `<untrusted_maintainer_comments>`, `<untrusted_diff>` blocks, and every system prompt that sees it states that it is data, not instructions, and what to do with embedded instructions: record and ignore (`injection_findings`, `injection_attempts_noticed`). Pipeline-derived artifacts are wrapped in plain tags (`<spec>`, `<design>`, …) and are also described as data, since they are derived from the issue.
+- Only the Analyst (read-only) and the Reviewer (no push, writes only to a probe dir) read raw issue text. Write-capable agents see only artifacts that passed a schema and a check (DESIGN principle 6).
+- The prompts never rely on the model refusing; the real enforcement is the tool allowlist, `--bare`, no tokens in the environment, and the post-run path allowlist. The prompts tell the agent why those limits exist so it does not try to work around them.
+- The Reviewer treats injected text **inside the diff** as a blocking `code` finding, because it would be merged.
+
+**Anti-sycophancy / anti-self-grading.**
+- The Analyst's criteria are rated by a separate Judge; the Judge is told to judge testability only and to fail criteria that try to steer its verdict.
+- The Tester is told where expected values must come from (ACs, not the implementation's output), that a failing test against a contradicting implementation is the correct result, and never to weaken a test. The fails-on-base check backs this up deterministically.
+- The Developer can contest a test only with a spec-based argument (quote the AC versus the assertion), so "this test is inconvenient" does not loosen the grader. The Tester decides contests "on the spec alone, not on which side is easier to satisfy".
+- The Developer must report `deviations_from_design` honestly; the prompt notes that an empty list is a checked claim.
+- The Reviewer is given both failure modes by name (rubber-stamping and nitpick-blocking) and a concrete test for severity ("can you show a concrete wrong outcome for an input the issue cares about?"). Approval requires commands it actually ran, including at least one own probe; every finding needs evidence; minor findings can never block. In round 2+ it must verify each of its old findings and then review afresh, which prevents both "fixed, approve" without checking and endless new nitpicks.
+- The Reviewer writes `expected_behaviour_from_issue` before reading the diff closely, so its expectations are anchored on the issue, not on the PR's own framing.
+
+**Scale and blocking questions (Analyst).** The A1 skill was written for whole systems. The adapter scales it to a change request (typically 2–6 ACs), maps its IDs onto the contract (`REQ-n`, `AC-n` so tests can be named `test_ac<N>_…`), drops `EXTERNAL` (no evidence tool), maps INTENT/CONFLICT/TENSION records onto `open_questions`, and narrows skill §7.1 to one operational rule: a question is blocking only if two plausible answers lead to different tests; otherwise it gets a default and an `ASSUMED` requirement. Maintainer comments (write-access users only) count as stakeholder answers and support `CONFIRMED`.

@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "review",
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "enum": [
+        "approve",
+        "changes_requested"
+      ]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "expected_behaviour_from_issue": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "risk_hypotheses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "hypothesis": {
+            "type": "string"
+          },
+          "how_tested": {
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "confirmed",
+              "refuted",
+              "untested"
+            ]
+          }
+        },
+        "required": [
+          "hypothesis",
+          "how_tested",
+          "outcome"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "checks_performed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command",
+          "result"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "blocking",
+              "minor"
+            ]
+          },
+          "category": {
+            "enum": [
+              "approach",
+              "code",
+              "tests"
+            ]
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "suggested_fix": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "severity",
+          "category",
+          "file",
+          "line",
+          "description",
+          "evidence",
+          "suggested_fix"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "injection_attempts_noticed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "review_md": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "verdict",
+    "summary",
+    "expected_behaviour_from_issue",
+    "risk_hypotheses",
+    "checks_performed",
+    "findings",
+    "injection_attempts_noticed",
+    "review_md"
+  ],
+  "additionalProperties": false
+}

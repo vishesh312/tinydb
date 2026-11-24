@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "test_map",
+  "type": "object",
+  "properties": {
+    "test_file": {
+      "type": "string"
+    },
+    "mapping": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ac": {
+            "type": "string"
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "ac",
+          "tests"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "test_file",
+    "mapping",
+    "notes"
+  ],
+  "additionalProperties": false
+}

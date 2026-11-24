@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "design",
+  "type": "object",
+  "properties": {
+    "approach": {
+      "type": "string"
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "modify",
+              "new"
+            ]
+          },
+          "new_file": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": "string"
+          },
+          "acs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "path",
+          "symbol",
+          "kind",
+          "new_file",
+          "description",
+          "acs"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "public_api": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "signature": {
+            "type": "string"
+          },
+          "behaviour": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "signature",
+          "behaviour"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "test_hooks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "architecture_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "design_md": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "approach",
+    "changes",
+    "public_api",
+    "test_hooks",
+    "risks",
+    "architecture_refs",
+    "design_md"
+  ],
+  "additionalProperties": false
+}

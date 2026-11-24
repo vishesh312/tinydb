@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "spec",
+  "type": "object",
+  "properties": {
+    "issue": {
+      "type": "integer"
+    },
+    "title": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "issue_type": {
+      "enum": [
+        "bug",
+        "feature",
+        "vague",
+        "other"
+      ]
+    },
+    "source_excerpts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^SRC-\\d+$"
+          },
+          "quote": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "quote"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^REQ-\\d+$"
+          },
+          "text": {
+            "type": "string"
+          },
+          "provenance": {
+            "enum": [
+              "STATED",
+              "CONFIRMED",
+              "DERIVED",
+              "ASSUMED"
+            ]
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "provenance",
+          "sources"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^AC-\\d+$"
+          },
+          "requirement": {
+            "type": "string"
+          },
+          "given": {
+            "type": "string"
+          },
+          "when": {
+            "type": "string"
+          },
+          "then": {
+            "type": "string"
+          },
+          "observable": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "requirement",
+          "given",
+          "when",
+          "then",
+          "observable"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^Q-\\d+$"
+          },
+          "question": {
+            "type": "string"
+          },
+          "why_it_matters": {
+            "type": "string"
+          },
+          "blocking": {
+            "type": "boolean"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "default_if_unanswered": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "question",
+          "why_it_matters",
+          "blocking",
+          "options",
+          "default_if_unanswered"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "out_of_scope": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "injection_findings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "spec_md": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "issue",
+    "title",
+    "summary",
+    "issue_type",
+    "source_excerpts",
+    "requirements",
+    "acceptance_criteria",
+    "open_questions",
+    "out_of_scope",
+    "injection_findings",
+    "spec_md"
+  ],
+  "additionalProperties": false
+}

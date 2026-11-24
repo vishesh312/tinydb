@@ -1,0 +1,261 @@
+# One review round (DESIGN §3, ADR-002, ADR-013):  rework? -> ci -> review -> post-review
+#
+# The review job is the independence boundary (ADR-008): read-only token, credentials not
+# persisted, no build artifacts downloaded (only its own previous review), and the agent
+# step runs with no GitHub token at all.
+name: autose-round
+
+on:
+  workflow_call:
+    inputs:
+      issue:
+        type: string
+        required: true
+      pr:
+        type: string
+        required: true
+      head_sha:
+        description: "PR head to test/review when there is no rework in this round"
+        type: string
+        default: ""
+      round:
+        type: number
+        required: true
+      prev_round:
+        type: number
+        default: 0
+      route:
+        description: "S2 | S3 | S4 from the previous review, or empty for no rework"
+        type: string
+        default: ""
+      final:
+        description: "This round's review cannot send work back"
+        type: boolean
+        default: false
+      state_artifact:
+        description: "Artifact holding the latest build-side state (build or previous rework)"
+        type: string
+        default: ""
+      spent_usd:
+        description: "Run spend so far when there is no rework in this round (a number, not an artifact)"
+        type: string
+        default: "0"
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+    outputs:
+      verdict:
+        value: ${{ jobs.post.outputs.verdict }}
+      route:
+        value: ${{ jobs.post.outputs.route }}
+
+permissions: {}
+
+env:
+  DISABLE_UPDATES: "1"
+  DISABLE_AUTOUPDATER: "1"
+  PYTHONPATH: ${{ github.workspace }}/ctl/.autose
+  AUTOSE_HOME: ${{ github.workspace }}/autose-home
+
+jobs:
+  rework:
+    if: inputs.route != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      status: ${{ steps.rework.outputs.status }}
+      head_sha: ${{ steps.rework.outputs.head_sha }}
+      spent_usd: ${{ steps.rework.outputs.spent_usd }}
+    steps:
+      - name: Job deadline for the orchestrator (ADR-009)
+        run: echo "AUTOSE_JOB_DEADLINE=$(( $(date +%s) + 60*60 ))" >> "$GITHUB_ENV"
+      - name: Checkout AutoSE code (default branch only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ctl
+          sparse-checkout: .autose
+          persist-credentials: false
+      - name: Checkout the AutoSE branch
+        uses: actions/checkout@v4
+        with:
+          ref: autose/issue-${{ inputs.issue }}
+          path: work
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ./work jsonschema pytest pytest-cov pytest-pycodestyle pytest-mypy mypy pyyaml types-PyYAML
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g @anthropic-ai/claude-code@2.1.331
+      - name: Sandbox prerequisites
+        if: vars.AUTOSE_SANDBOX == '1'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
+      - name: Download build-side state (spec, design, state.json, ledger)
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.state_artifact }}
+          path: autose-home
+      - name: Download the review that routed this rework
+        uses: actions/download-artifact@v4
+        with:
+          name: autose-issue${{ inputs.issue }}-review-r${{ inputs.prev_round }}
+          path: prev-review
+      - name: Prepare (token; issue + trusted comments + branch check to files)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m autose rework --phase prepare --issue "${{ inputs.issue }}" --repo-dir work
+      - name: Agents (NO GitHub token; re-enter at the routed stage)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AUTOSE_PYTHON: python
+          AUTOSE_SANDBOX: ${{ vars.AUTOSE_SANDBOX }}
+          AUTOSE_MODEL_ARCHITECT: ${{ vars.AUTOSE_MODEL_ARCHITECT }}
+          AUTOSE_MODEL_DEVELOPER: ${{ vars.AUTOSE_MODEL_DEVELOPER }}
+          AUTOSE_MODEL_TESTER: ${{ vars.AUTOSE_MODEL_TESTER }}
+        run: >-
+          python -m autose rework --phase agent --issue "${{ inputs.issue }}" --route "${{ inputs.route }}"
+          --repo-dir work --review-dir prev-review
+      - name: Publish S5 (token; final allowlist gate, push, PR update, labels, status)
+        id: rework
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m autose rework --phase publish --issue "${{ inputs.issue }}" --repo-dir work
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autose-issue${{ inputs.issue }}-r${{ inputs.round }}-rework
+          path: autose-home
+          overwrite: true
+          if-no-files-found: warn
+
+  ci:
+    needs: rework
+    if: ${{ !cancelled() && (inputs.route == '' || needs.rework.outputs.status == 'pr-open') }}
+    permissions:
+      contents: read
+      statuses: write
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.rework.outputs.head_sha || inputs.head_sha }}
+      sha: ${{ needs.rework.outputs.head_sha || inputs.head_sha }}
+
+  review:
+    needs: [rework, ci]
+    if: ${{ !cancelled() && needs.ci.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Job deadline for the orchestrator (ADR-009)
+        run: echo "AUTOSE_JOB_DEADLINE=$(( $(date +%s) + 45*60 ))" >> "$GITHUB_ENV"
+      - name: Checkout AutoSE code (default branch only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ctl
+          sparse-checkout: .autose
+          persist-credentials: false
+      - name: Checkout the PR head (no credentials kept)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.rework.outputs.head_sha || inputs.head_sha }}
+          path: work
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ./work jsonschema pytest pytest-cov pytest-pycodestyle pytest-mypy mypy pyyaml types-PyYAML
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g @anthropic-ai/claude-code@2.1.331
+      - name: Sandbox prerequisites
+        if: vars.AUTOSE_SANDBOX == '1'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
+      - name: Download ONLY the reviewer's own previous review
+        if: inputs.prev_round > 0
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: autose-issue${{ inputs.issue }}-review-r${{ inputs.prev_round }}
+          path: prev-review
+      - name: Prepare inputs (token present; writes issue, trusted comments, diff to files)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python -m autose review --prepare --issue "${{ inputs.issue }}" --pr "${{ inputs.pr }}"
+          --repo-dir work --in-dir "$RUNNER_TEMP/review-in"
+      - name: Independent review (no GitHub token in this step)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AUTOSE_PYTHON: python
+          AUTOSE_SANDBOX: ${{ vars.AUTOSE_SANDBOX }}
+          AUTOSE_MODEL_REVIEWER: ${{ vars.AUTOSE_MODEL_REVIEWER }}
+        run: >-
+          python -m autose review --no-github --issue "${{ inputs.issue }}" --pr "${{ inputs.pr }}"
+          --round "${{ inputs.round }}" --repo-dir work --in-dir "$RUNNER_TEMP/review-in"
+          --out "$AUTOSE_HOME/review" --probe-dir "$RUNNER_TEMP/review-probes"
+          --previous-review prev-review/review.json
+          --spent-usd "${{ needs.rework.outputs.spent_usd || inputs.spent_usd }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autose-issue${{ inputs.issue }}-review-r${{ inputs.round }}
+          path: autose-home/review
+          overwrite: true
+          if-no-files-found: warn
+
+  post:
+    needs: [rework, ci, review]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    outputs:
+      verdict: ${{ steps.post.outputs.verdict }}
+      route: ${{ steps.post.outputs.route }}
+    steps:
+      - name: Checkout AutoSE code (default branch only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ctl
+          sparse-checkout: .autose
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install jsonschema
+      - name: Download this round's review
+        if: needs.review.result == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: autose-issue${{ inputs.issue }}-review-r${{ inputs.round }}
+          path: review
+      - name: Validate, post (COMMENT + verdict header), label, route
+        id: post
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python -m autose post-review --issue "${{ inputs.issue }}" --pr "${{ inputs.pr }}"
+          --round "${{ inputs.round }}" ${{ inputs.final && '--final' || '' }}
+          --ci-result "${{ needs.ci.result }}"
+          --rework-status "${{ inputs.route == '' && 'skipped' || (needs.rework.outputs.status || 'failed') }}"
+          --review-dir review

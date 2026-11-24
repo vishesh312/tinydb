@@ -1,0 +1,284 @@
+# AutoSE: issue in, reviewed pull request out (DESIGN §3, ADR-002, ADR-010).
+#
+#   gate -> build(S1-S5) -> round1[ci -> review -> post] -> round2[rework -> ...] -> round3[... final] -> finalize
+#
+# Agent code is always taken from the DEFAULT branch (`ctl/.autose`), never from a PR branch.
+# The tree the agents modify is a separate checkout (`work/`).
+name: autose
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      sandbox:
+        description: "Also probe the Claude Code bash sandbox (AUTOSE_SANDBOX=1)"
+        type: boolean
+        default: false
+
+# Grants nothing; every job declares what it needs (DESIGN §10.1).
+permissions: {}
+
+# Only real triggers from trusted people queue per issue; anything else (unrelated comments, comments by
+# non-collaborators) gets its own group and exits in the gate, so it can never cancel a queued run
+# (DESIGN §11, ADR-010). There are deliberately no job-level groups: they could cancel another run's
+# pending rounds. The residual cross-run race is handled by stale-SHA discard (see README).
+concurrency:
+  group: ${{ ((github.event_name == 'issues' && github.event.label.name == 'autose') || (github.event_name == 'issue_comment' && startsWith(github.event.comment.body, '/autose') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))) && format('autose-{0}', github.event.issue.number) || format('autose-noop-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+env:
+  DISABLE_UPDATES: "1"
+  DISABLE_AUTOUPDATER: "1"
+  PYTHONPATH: ${{ github.workspace }}/ctl/.autose
+  AUTOSE_HOME: ${{ github.workspace }}/autose-home
+
+jobs:
+  gate:
+    if: >-
+      github.event_name != 'workflow_dispatch' &&
+      github.event.sender.type != 'Bot' &&
+      ((github.event_name == 'issues' && github.event.label.name == 'autose') ||
+       (github.event_name == 'issue_comment' && startsWith(github.event.comment.body, '/autose')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: read
+      contents: read
+    outputs:
+      proceed: ${{ steps.gate.outputs.proceed }}
+      mode: ${{ steps.gate.outputs.mode }}
+      issue: ${{ steps.gate.outputs.issue }}
+      pr: ${{ steps.gate.outputs.pr }}
+      head_sha: ${{ steps.gate.outputs.head_sha }}
+    steps:
+      - name: Checkout AutoSE code (default branch only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ctl
+          sparse-checkout: .autose
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install jsonschema
+      - name: Authorise trigger (write permission, no bots, no fork PRs)
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m autose gate
+
+  build:
+    needs: gate
+    if: needs.gate.outputs.proceed == 'true' && needs.gate.outputs.mode == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      status: ${{ steps.build.outputs.status }}
+      pr: ${{ steps.build.outputs.pr }}
+      head_sha: ${{ steps.build.outputs.head_sha }}
+      spent_usd: ${{ steps.build.outputs.spent_usd }}
+    steps:
+      - name: Job deadline for the orchestrator (ADR-009)
+        run: echo "AUTOSE_JOB_DEADLINE=$(( $(date +%s) + 60*60 ))" >> "$GITHUB_ENV"
+      - name: Checkout AutoSE code (default branch only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ctl
+          sparse-checkout: .autose
+          persist-credentials: false
+      - name: Checkout working tree
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: work
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install project + checker dependencies
+        run: pip install -e ./work jsonschema pytest pytest-cov pytest-pycodestyle pytest-mypy mypy pyyaml types-PyYAML
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install pinned Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.331
+      - name: Sandbox prerequisites
+        if: vars.AUTOSE_SANDBOX == '1'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
+      - name: Prepare (token; issue + trusted comments + branch check to files)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m autose build --phase prepare --issue "${{ needs.gate.outputs.issue }}" --repo-dir work
+      - name: Agents S1-S4 (NO GitHub token in this step)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AUTOSE_PYTHON: python
+          AUTOSE_SANDBOX: ${{ vars.AUTOSE_SANDBOX }}
+          AUTOSE_MODEL_ANALYST: ${{ vars.AUTOSE_MODEL_ANALYST }}
+          AUTOSE_MODEL_JUDGE: ${{ vars.AUTOSE_MODEL_JUDGE }}
+          AUTOSE_MODEL_ARCHITECT: ${{ vars.AUTOSE_MODEL_ARCHITECT }}
+          AUTOSE_MODEL_DEVELOPER: ${{ vars.AUTOSE_MODEL_DEVELOPER }}
+          AUTOSE_MODEL_TESTER: ${{ vars.AUTOSE_MODEL_TESTER }}
+        run: python -m autose build --phase agent --issue "${{ needs.gate.outputs.issue }}" --repo-dir work
+      - name: Publish S5 (token; final allowlist gate, push, PR, labels, status)
+        id: build
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m autose build --phase publish --issue "${{ needs.gate.outputs.issue }}" --repo-dir work
+      - name: Upload build artifacts (also on stop paths)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autose-issue${{ needs.gate.outputs.issue }}-build
+          path: autose-home
+          overwrite: true
+          if-no-files-found: warn
+
+  round1:
+    needs: [gate, build]
+    if: >-
+      !cancelled() && needs.gate.outputs.proceed == 'true' &&
+      (needs.build.outputs.status == 'pr-open' || needs.gate.outputs.mode == 'review')
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      statuses: write
+    uses: ./.github/workflows/autose-round.yml
+    with:
+      issue: ${{ needs.gate.outputs.issue }}
+      pr: ${{ needs.build.outputs.pr || needs.gate.outputs.pr }}
+      head_sha: ${{ needs.build.outputs.head_sha || needs.gate.outputs.head_sha }}
+      round: 1
+      prev_round: 0
+      route: ""
+      final: ${{ needs.gate.outputs.mode == 'review' }}
+      state_artifact: ""
+      spent_usd: ${{ needs.build.outputs.spent_usd || '0' }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  round2:
+    needs: [gate, build, round1]
+    if: >-
+      !cancelled() && needs.gate.outputs.mode == 'full' &&
+      needs.round1.outputs.verdict == 'changes_requested'
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      statuses: write
+    uses: ./.github/workflows/autose-round.yml
+    with:
+      issue: ${{ needs.gate.outputs.issue }}
+      pr: ${{ needs.build.outputs.pr }}
+      head_sha: ""
+      round: 2
+      prev_round: 1
+      route: ${{ needs.round1.outputs.route }}
+      final: false
+      state_artifact: autose-issue${{ needs.gate.outputs.issue }}-build
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  round3:
+    needs: [gate, build, round2]
+    if: >-
+      !cancelled() && needs.gate.outputs.mode == 'full' &&
+      needs.round2.outputs.verdict == 'changes_requested'
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      statuses: write
+    uses: ./.github/workflows/autose-round.yml
+    with:
+      issue: ${{ needs.gate.outputs.issue }}
+      pr: ${{ needs.build.outputs.pr }}
+      head_sha: ""
+      round: 3
+      prev_round: 2
+      route: ${{ needs.round2.outputs.route }}
+      final: true   # after the 2nd send-back the review is final; a human decides (ADR-013)
+      state_artifact: autose-issue${{ needs.gate.outputs.issue }}-r2-rework
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  finalize:
+    needs: [gate, build, round1, round2, round3]
+    if: always() && needs.gate.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout AutoSE code (default branch only)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: ctl
+          sparse-checkout: .autose
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install jsonschema
+      - name: Final labels and status line (the bot never merges)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python -m autose finalize --issue "${{ needs.gate.outputs.issue }}"
+          --build-status "${{ needs.gate.outputs.mode == 'review' && 'review-only' || needs.build.outputs.status }}"
+          --verdicts "${{ needs.round1.outputs.verdict }},${{ needs.round2.outputs.verdict }},${{ needs.round3.outputs.verdict }}"
+
+  canary:
+    # Manual, cheap harness checks before the first real run (DESIGN §10.1). Calls the API.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout AutoSE code (default branch only)
+        uses: actions/checkout@v4
+        with:
+          path: ctl
+          sparse-checkout: .autose
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install jsonschema
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install pinned Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.331
+      - name: Sandbox prerequisites
+        if: inputs.sandbox
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
+      - name: Run canaries
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AUTOSE_SANDBOX: ${{ inputs.sandbox && '1' || '' }}
+        run: python -m autose --home autose-home canary
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autose-canary
+          path: autose-home
+          overwrite: true
