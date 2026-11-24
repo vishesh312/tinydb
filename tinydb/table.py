@@ -428,14 +428,15 @@ class Table:
         self,
         fields: Union[Mapping, Callable[[MutableMapping], None]],
         cond: Optional[QueryLike] = None,
-        doc_ids: Optional[Iterable[int]] = None,
+        doc_ids: Optional[Iterable[Union[int, str]]] = None,
     ) -> list[int]:
         """
         Update all matching documents to have a given set of fields.
 
         When ``doc_ids`` is given, IDs that don't refer to an existing
         document are silently skipped, and the returned list only contains
-        the IDs that were actually updated.
+        the IDs that were actually updated. Like ``get``, string IDs such
+        as ``'1'`` are accepted and refer to the same document as ``1``.
 
         :param fields: the fields that the matching documents will have
                        or a callable that mutates matching documents in place
@@ -461,17 +462,16 @@ class Table:
             # silently skipped, mirroring the behaviour of ``get(doc_ids=...)``
             # (see issue #591). The list of *actually* updated IDs is
             # determined inside the updater so it reflects the table state at
-            # write time.
-            requested_ids = list(doc_ids)
+            # write time. IDs are matched the same way ``get`` matches them
+            # (by their string form), so '1' and 1 both refer to document 1.
+            requested_ids = [str(doc_id) for doc_id in doc_ids]
             updated_ids: list[int] = []
 
             def updater(table: dict):
                 # Filter to IDs that exist *before* performing any updates,
                 # so the operation is atomic: either every existing target is
                 # updated, or none is.
-                updated_ids.extend(
-                    doc_id for doc_id in requested_ids if doc_id in table
-                )
+                updated_ids.extend(self._existing_ids(table, requested_ids))
                 for doc_id in updated_ids:
                     perform_update(table, doc_id)
 
@@ -625,14 +625,15 @@ class Table:
     def remove(
         self,
         cond: Optional[QueryLike] = None,
-        doc_ids: Optional[Iterable[int]] = None,
+        doc_ids: Optional[Iterable[Union[int, str]]] = None,
     ) -> list[int]:
         """
         Remove all matching documents.
 
         When ``doc_ids`` is given, IDs that don't refer to an existing
         document are silently skipped, and the returned list only contains
-        the IDs that were actually removed.
+        the IDs that were actually removed. Like ``get``, string IDs such
+        as ``'1'`` are accepted and refer to the same document as ``1``.
 
         :param cond: the condition to check against
         :param doc_ids: a list of document IDs
@@ -644,17 +645,17 @@ class Table:
             # are silently skipped, mirroring the behaviour of
             # ``get(doc_ids=...)`` (see issue #591). The list of *actually*
             # removed IDs is determined inside the updater so it reflects the
-            # table state at write time.
-            requested_ids = list(doc_ids)
+            # table state at write time. IDs are matched the same way
+            # ``get`` matches them (by their string form), so '1' and 1 both
+            # refer to document 1.
+            requested_ids = [str(doc_id) for doc_id in doc_ids]
             removed_ids: list[int] = []
 
             def updater(table: dict):
                 # Filter to IDs that exist *before* performing any removals,
                 # so the operation is atomic: either every existing target is
                 # removed, or none is.
-                removed_ids.extend(
-                    doc_id for doc_id in requested_ids if doc_id in table
-                )
+                removed_ids.extend(self._existing_ids(table, requested_ids))
                 for doc_id in removed_ids:
                     del table[doc_id]
 
@@ -740,6 +741,23 @@ class Table:
         for doc_id, doc in self._read_table().items():
             # Convert documents to the document class
             yield self.document_class(doc, self.document_id_class(doc_id))
+
+    @staticmethod
+    def _existing_ids(table: dict, requested_ids: list[str]) -> list:
+        """
+        Return the keys of ``table`` that the given (stringified) document
+        IDs refer to, in request order. IDs that don't exist are skipped,
+        mirroring how ``get(doc_id=...)`` / ``get(doc_ids=...)`` look up
+        documents by ``str(doc_id)``. A document referenced more than once
+        (e.g. as ``1`` and ``'1'``) is only returned once.
+        """
+        by_str = {str(doc_id): doc_id for doc_id in table}
+        found: dict = {}
+        for i in requested_ids:
+            if i in by_str:
+                found.setdefault(i, by_str[i])
+
+        return list(found.values())
 
     def _get_next_id(self):
         """
