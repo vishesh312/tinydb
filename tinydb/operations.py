@@ -35,6 +35,21 @@ def add(field: str, n: Union[int, float, str]) -> Callable[[MutableMapping], Non
     return transform
 
 
+def append(field: str, value: Any) -> Callable[[MutableMapping], None]:
+    """
+    Append ``value`` as one element to a list field in the document.
+
+    If the field is missing, create it as a one-element list.
+    """
+    def transform(doc: MutableMapping) -> None:
+        if field not in doc:
+            doc[field] = [value]
+        else:
+            doc[field].append(value)
+
+    return transform
+
+
 def subtract(field: str, n: Union[int, float]) -> Callable[[MutableMapping], None]:
     """
     Subtract ``n`` to a given field in the document.
