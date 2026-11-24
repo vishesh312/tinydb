@@ -279,8 +279,9 @@ def decide_post(meta: dict[str, Any] | None, review: dict[str, Any] | None, *, f
         return PostDecision("stale", "", f"Discarded a review of {meta['head_sha'][:8]}: the PR head is now "
                                          f"{current_head[:8]}.", False)
     if review is None or not meta.get("valid") or checks.review_problems(review):
-        return PostDecision("awaiting-human", "", "Invalid review after one re-ask; not an approval, no routing.",
-                            review is not None)
+        # Always posted (as a COMMENT): a reviewer that produced nothing must still be visible on the PR.
+        # Before 2026-11-24 a missing review.json meant nothing was posted (results/runs.md, quota runs).
+        return PostDecision("awaiting-human", "", "Invalid review after one re-ask; not an approval, no routing.", True)
     if review["verdict"] == "approve":
         if (review.get("verification") or {}).get("original_verdict") == "changes_requested":
             return PostDecision("approve", "", "Verification rejected every blocking finding (approve-equivalent, "
