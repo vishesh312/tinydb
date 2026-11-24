@@ -722,6 +722,16 @@ class Table:
 
         self._query_cache.clear()
 
+    def __contains__(self, item: object) -> bool:
+        """Check for a document ID or a matching query."""
+        if isinstance(item, int):
+            return self.contains(doc_id=item)
+        if callable(item):
+            return self.contains(item)
+        raise TypeError(
+            'Membership requires an integer document ID or a callable query'
+        )
+
     def __len__(self):
         """
         Count the total number of documents in this table.

@@ -257,6 +257,10 @@ class TinyDB(TableBase):
     # Here we forward magic methods to the default table instance. These are
     # not handled by __getattr__ so we need to forward them manually here
 
+    def __contains__(self, item: object) -> bool:
+        """Check membership in the default table."""
+        return item in self.table(self.default_table_name)
+
     def __len__(self):
         """
         Get the total number of documents in the default table.
