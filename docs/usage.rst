@@ -315,6 +315,8 @@ with these operations:
 - ``add(key, value)``: add ``value`` to the value of a key (also works for strings)
 - ``subtract(key, value)``: subtract ``value`` from the value of a key
 - ``set(key, value)``: set ``key`` to ``value``
+- ``append(key, value)``: append ``value`` to the list stored under ``key``
+  (the list is created if the document doesn't have ``key`` yet)
 
 Of course you also can write your own operations:
 
