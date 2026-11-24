@@ -260,11 +260,16 @@ class Table:
         :returns: list of matching documents
         """
 
+        # Fragment queries bypass the query cache entirely (see
+        # ``_is_fragment_query``), both for lookups and for storing results.
+        use_cache = not self._is_fragment_query(cond)
+
         # First, we check the query cache to see if it has results for this
         # query
-        cached_results = self._query_cache.get(cond)
-        if cached_results is not None:
-            return cached_results[:]
+        if use_cache:
+            cached_results = self._query_cache.get(cond)
+            if cached_results is not None:
+                return cached_results[:]
 
         # Perform the search by applying the query to all documents.
         # Then, only if the document matches the query, convert it
@@ -290,11 +295,32 @@ class Table:
         # are cacheable.
         is_cacheable: Callable[[], bool] = getattr(cond, 'is_cacheable',
                                                    lambda: True)
-        if is_cacheable():
+        if use_cache and is_cacheable():
             # Update the query cache
             self._query_cache[cond] = docs[:]
 
         return docs
+
+    @staticmethod
+    def _is_fragment_query(cond: QueryLike) -> bool:
+        """
+        Check whether ``cond`` is (or contains) a ``fragment()`` query.
+
+        Results of fragment queries on different fields were served from the
+        same cache entry, so ``Table.search`` evaluates them directly instead
+        of going through the query cache. Combined queries (``&``, ``|``,
+        ``~``) are inspected recursively.
+        """
+        def walk(node) -> bool:
+            if isinstance(node, tuple):
+                if node and node[0] == 'fragment':
+                    return True
+                return any(walk(child) for child in node)
+            if isinstance(node, frozenset):
+                return any(walk(child) for child in node)
+            return False
+
+        return walk(getattr(cond, '_hash', None))
 
     @overload
     def get(self) -> NoReturn: ...
