@@ -123,6 +123,9 @@ class CodexRunner:
             out = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
             env = parse_codex_events(out, "", call.role.model, call.schema)
             env.update(is_error=True, subtype="error_timeout", result=f"killed after {call.role.timeout_s}s")
+            # Codex reports usage only in turn.completed, which a killed run never emits, so the partial
+            # count is 0. Drop it so parse_envelope charges the role's full cap, as for a Claude timeout.
+            env.pop("total_cost_usd", None)
             return env
         except FileNotFoundError:
             return _error("error_no_cli", f"{self.executable} not found")
