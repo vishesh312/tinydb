@@ -267,6 +267,12 @@ class TinyDB(TableBase):
         """
         return len(self.table(self.default_table_name))
 
+    def __contains__(self, item: object) -> bool:
+        """
+        Check ``doc_id in db`` or ``query in db`` on the default table.
+        """
+        return item in self.table(self.default_table_name)
+
     def __iter__(self) -> Iterator[Document]:
         """
         Return an iterator for the default table's documents.
