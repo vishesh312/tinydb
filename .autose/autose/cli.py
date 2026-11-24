@@ -418,6 +418,13 @@ def cmd_post_review(a: argparse.Namespace) -> int:
                 gh.add_label(a.pr, "autose:review-approved" if review["verdict"] == "approve"
                              else "autose:review-changes-requested")
             best_effort("labels", labels)
+    elif d.post and review is None and meta is not None:
+        # Invalid review with no structured output (e.g. the provider quota ran out): post the rendered
+        # "INVALID REVIEW (not an approval)" body so the PR shows why no review counts.
+        body = (rdir / "review.md").read_text() if (rdir / "review.md").exists() else \
+            f"## AutoSE review (round {a.round}): **INVALID REVIEW (not an approval)**\n\n{d.note}\n"
+        body += "\n\nProblems: " + "; ".join(map(str, meta.get("problems", [])))[:3000] + "\n"
+        best_effort("invalid review", lambda: gh.post_review(a.pr, body, meta["head_sha"]))
     best_effort("status comment", lambda: update_status(
         gh, a.issue, d.verdict, [f"- {stamp()} round {a.round}: review **{d.verdict}** {d.note}"]))
     return 0
