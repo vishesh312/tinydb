@@ -428,7 +428,7 @@ class Table:
         self,
         fields: Union[Mapping, Callable[[MutableMapping], None]],
         cond: Optional[QueryLike] = None,
-        doc_ids: Optional[Iterable[int]] = None,
+        doc_ids: Optional[Iterable[Union[int, str]]] = None,
     ) -> list[int]:
         """
         Update all matching documents to have a given set of fields.
@@ -440,7 +440,7 @@ class Table:
         :param fields: the fields that the matching documents will have
                        or a callable that mutates matching documents in place
         :param cond: which documents to update
-        :param doc_ids: a list of document IDs
+        :param doc_ids: an iterable of document IDs (integers or strings)
         :returns: a list containing the updated document's ID
         """
 
@@ -462,7 +462,8 @@ class Table:
             # (see issue #591). The list of *actually* updated IDs is
             # determined inside the updater so it reflects the table state at
             # write time.
-            requested_ids = list(doc_ids)
+            requested_ids = [self.document_id_class(doc_id)
+                             for doc_id in doc_ids]
             updated_ids: list[int] = []
 
             def updater(table: dict):
@@ -625,7 +626,7 @@ class Table:
     def remove(
         self,
         cond: Optional[QueryLike] = None,
-        doc_ids: Optional[Iterable[int]] = None,
+        doc_ids: Optional[Iterable[Union[int, str]]] = None,
     ) -> list[int]:
         """
         Remove all matching documents.
@@ -635,7 +636,7 @@ class Table:
         the IDs that were actually removed.
 
         :param cond: the condition to check against
-        :param doc_ids: a list of document IDs
+        :param doc_ids: an iterable of document IDs (integers or strings)
         :returns: a list containing the removed documents' ID
         """
         if doc_ids is not None:
@@ -645,7 +646,8 @@ class Table:
             # ``get(doc_ids=...)`` (see issue #591). The list of *actually*
             # removed IDs is determined inside the updater so it reflects the
             # table state at write time.
-            requested_ids = list(doc_ids)
+            requested_ids = [self.document_id_class(doc_id)
+                             for doc_id in doc_ids]
             removed_ids: list[int] = []
 
             def updater(table: dict):
