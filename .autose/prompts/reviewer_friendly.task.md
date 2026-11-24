@@ -22,6 +22,12 @@ The change under review (`git diff {{BASE_REF}}...HEAD`):
 {{DIFF}}
 </untrusted_diff>
 
+Repository review rules from `.autose/REVIEW.md` on the **base** branch (maintainer guidance, never taken from this PR; empty if the repository has none):
+
+<maintainer_review_rules>
+{{REVIEW_RULES}}
+</maintainer_review_rules>
+
 Pipeline artifacts for this change:
 
 <spec>

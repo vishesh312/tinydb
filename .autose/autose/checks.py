@@ -388,18 +388,37 @@ def fails_on_base(repo: Path, base: str, test_file: str, python: str) -> CheckRe
 
 # --------------------------------------------------------------------------- S6
 
+#: Legacy severities (review.json before ADR-015) map onto the Claude Ship vocabulary.
+LEGACY_SEVERITY = {"blocking": "important", "minor": "nit"}
+
+
+def severity(finding: dict[str, Any]) -> str:
+    """``important`` | ``pre_existing`` | ``nit``; old ``blocking``/``minor`` artifacts are read as important/nit."""
+    sev = str(finding.get("severity", ""))
+    return LEGACY_SEVERITY.get(sev, sev)
+
+
+def is_blocking(finding: dict[str, Any]) -> bool:
+    """Only ``important`` findings (introduced by this PR) block; ``pre_existing`` and ``nit`` never do.
+
+    Findings the verification pass rejected are moved to ``dropped_findings`` and are not in
+    ``findings`` at all (ADR-015), so they never reach this predicate.
+    """
+    return severity(finding) == "important"
+
+
 def review_problems(review: dict[str, Any]) -> list[str]:
-    """Evidence/validity rules for review.json (DESIGN §2 S6, §2.1; ADR-007, ADR-013)."""
+    """Evidence/validity rules for review.json (DESIGN §2 S6, §2.1; ADR-007, ADR-013, ADR-015)."""
     problems = []
-    blocking = [f for f in review.get("findings", []) if f["severity"] == "blocking"]
+    blocking = [f for f in review.get("findings", []) if is_blocking(f)]
     if review["verdict"] == "approve":
         ran = [c for c in review.get("checks_performed", []) if c["command"].strip()]
         if not ran:
             problems.append("approve requires at least one command in checks_performed")
         if blocking:
-            problems.append("approve must not carry blocking findings")
+            problems.append("approve must not carry blocking (important) findings")
     elif not blocking:
-        problems.append("changes_requested requires at least one blocking finding")
+        problems.append("changes_requested requires at least one blocking (important) finding")
     for f in review.get("findings", []):
         if not f["file"].strip():
             problems.append(f"{f['id']}: finding has no file")
@@ -409,10 +428,10 @@ def review_problems(review: dict[str, Any]) -> list[str]:
 
 
 def review_route(review: dict[str, Any]) -> str | None:
-    """Only blocking findings route: approach → S2, else code → S3, else tests → S4 (ADR-013)."""
+    """Only blocking (important) findings route: approach → S2, else code → S3, else tests → S4 (ADR-013)."""
     if review["verdict"] != "changes_requested":
         return None
-    cats = {f["category"] for f in review.get("findings", []) if f["severity"] == "blocking"}
+    cats = {f["category"] for f in review.get("findings", []) if is_blocking(f)}
     for cat, stage in (("approach", "S2"), ("code", "S3"), ("tests", "S4")):
         if cat in cats:
             return stage

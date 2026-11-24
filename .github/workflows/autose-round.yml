@@ -41,7 +41,8 @@ on:
         type: string
         default: "0"
     secrets:
-      ANTHROPIC_API_KEY:
+      CODEX_AUTH_JSON:
+        description: "Codex CLI ChatGPT login (auth.json contents); only the tokenless agent steps see it"
         required: true
     outputs:
       verdict:
@@ -52,6 +53,7 @@ on:
 permissions: {}
 
 env:
+  # Harmless leftovers from the Claude CLI; codex never self-updates in `exec` mode.
   DISABLE_UPDATES: "1"
   DISABLE_AUTOUPDATER: "1"
   PYTHONPATH: ${{ github.workspace }}/ctl/.autose
@@ -71,6 +73,14 @@ jobs:
       head_sha: ${{ steps.rework.outputs.head_sha }}
       spent_usd: ${{ steps.rework.outputs.spent_usd }}
     steps:
+      - name: Require the CODEX_AUTH_JSON secret (only its presence is exposed here)
+        env:
+          HAS_CODEX_AUTH: ${{ secrets.CODEX_AUTH_JSON != '' }}
+        run: |
+          if [ "$HAS_CODEX_AUTH" != "true" ]; then
+            echo "::error::Secret CODEX_AUTH_JSON is missing or empty (see README: Maintainer setup)."
+            exit 1
+          fi
       - name: Job deadline for the orchestrator (ADR-009)
         run: echo "AUTOSE_JOB_DEADLINE=$(( $(date +%s) + 60*60 ))" >> "$GITHUB_ENV"
       - name: Checkout AutoSE code (default branch only)
@@ -94,7 +104,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm install -g @anthropic-ai/claude-code@2.1.331
+      - name: Install pinned Codex CLI
+        run: npm install -g @openai/codex@0.172.0
       - name: Sandbox prerequisites
         if: vars.AUTOSE_SANDBOX == '1'
         run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
@@ -114,15 +125,28 @@ jobs:
         run: python -m autose rework --phase prepare --issue "${{ inputs.issue }}" --repo-dir work
       - name: Agents (NO GitHub token; re-enter at the routed stage)
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          AUTOSE_BACKEND: codex
           AUTOSE_PYTHON: python
           AUTOSE_SANDBOX: ${{ vars.AUTOSE_SANDBOX }}
           AUTOSE_MODEL_ARCHITECT: ${{ vars.AUTOSE_MODEL_ARCHITECT }}
           AUTOSE_MODEL_DEVELOPER: ${{ vars.AUTOSE_MODEL_DEVELOPER }}
           AUTOSE_MODEL_TESTER: ${{ vars.AUTOSE_MODEL_TESTER }}
-        run: >-
-          python -m autose rework --phase agent --issue "${{ inputs.issue }}" --route "${{ inputs.route }}"
-          --repo-dir work --review-dir prev-review
+        run: |
+          if [ -z "$CODEX_AUTH_JSON" ]; then
+            echo "::error::CODEX_AUTH_JSON secret is empty; cannot authenticate the codex CLI."
+            exit 1
+          fi
+          install -d -m 700 "$RUNNER_TEMP/codex-home"
+          (umask 077 && printf '%s' "$CODEX_AUTH_JSON" > "$RUNNER_TEMP/codex-home/auth.json")
+          chmod 600 "$RUNNER_TEMP/codex-home/auth.json"
+          unset CODEX_AUTH_JSON
+          export CODEX_HOME="$RUNNER_TEMP/codex-home"
+          python -m autose rework --phase agent --issue "${{ inputs.issue }}" --route "${{ inputs.route }}" \
+            --repo-dir work --review-dir prev-review
+      - name: Remove the Codex login
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/codex-home"
       - name: Publish S5 (token; final allowlist gate, push, PR update, labels, status)
         id: rework
         if: ${{ !cancelled() }}
@@ -158,6 +182,14 @@ jobs:
       issues: read
       pull-requests: read
     steps:
+      - name: Require the CODEX_AUTH_JSON secret (only its presence is exposed here)
+        env:
+          HAS_CODEX_AUTH: ${{ secrets.CODEX_AUTH_JSON != '' }}
+        run: |
+          if [ "$HAS_CODEX_AUTH" != "true" ]; then
+            echo "::error::Secret CODEX_AUTH_JSON is missing or empty (see README: Maintainer setup)."
+            exit 1
+          fi
       - name: Job deadline for the orchestrator (ADR-009)
         run: echo "AUTOSE_JOB_DEADLINE=$(( $(date +%s) + 45*60 ))" >> "$GITHUB_ENV"
       - name: Checkout AutoSE code (default branch only)
@@ -181,7 +213,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm install -g @anthropic-ai/claude-code@2.1.331
+      - name: Install pinned Codex CLI
+        run: npm install -g @openai/codex@0.172.0
       - name: Sandbox prerequisites
         if: vars.AUTOSE_SANDBOX == '1'
         run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
@@ -200,16 +233,29 @@ jobs:
           --repo-dir work --in-dir "$RUNNER_TEMP/review-in"
       - name: Independent review (no GitHub token in this step)
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          AUTOSE_BACKEND: codex
           AUTOSE_PYTHON: python
           AUTOSE_SANDBOX: ${{ vars.AUTOSE_SANDBOX }}
           AUTOSE_MODEL_REVIEWER: ${{ vars.AUTOSE_MODEL_REVIEWER }}
-        run: >-
-          python -m autose review --no-github --issue "${{ inputs.issue }}" --pr "${{ inputs.pr }}"
-          --round "${{ inputs.round }}" --repo-dir work --in-dir "$RUNNER_TEMP/review-in"
-          --out "$AUTOSE_HOME/review" --probe-dir "$RUNNER_TEMP/review-probes"
-          --previous-review prev-review/review.json
-          --spent-usd "${{ needs.rework.outputs.spent_usd || inputs.spent_usd }}"
+        run: |
+          if [ -z "$CODEX_AUTH_JSON" ]; then
+            echo "::error::CODEX_AUTH_JSON secret is empty; cannot authenticate the codex CLI."
+            exit 1
+          fi
+          install -d -m 700 "$RUNNER_TEMP/codex-home"
+          (umask 077 && printf '%s' "$CODEX_AUTH_JSON" > "$RUNNER_TEMP/codex-home/auth.json")
+          chmod 600 "$RUNNER_TEMP/codex-home/auth.json"
+          unset CODEX_AUTH_JSON
+          export CODEX_HOME="$RUNNER_TEMP/codex-home"
+          python -m autose review --no-github --issue "${{ inputs.issue }}" --pr "${{ inputs.pr }}" \
+            --round "${{ inputs.round }}" --repo-dir work --in-dir "$RUNNER_TEMP/review-in" \
+            --out "$AUTOSE_HOME/review" --probe-dir "$RUNNER_TEMP/review-probes" \
+            --previous-review prev-review/review.json \
+            --spent-usd "${{ needs.rework.outputs.spent_usd || inputs.spent_usd }}"
+      - name: Remove the Codex login
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/codex-home"
       - if: always()
         uses: actions/upload-artifact@v4
         with:

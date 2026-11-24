@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       sandbox:
-        description: "Also probe the Claude Code bash sandbox (AUTOSE_SANDBOX=1)"
+        description: "Also probe the agent sandbox (AUTOSE_SANDBOX=1)"
         type: boolean
         default: false
 
@@ -30,6 +30,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # Harmless leftovers from the Claude CLI; codex never self-updates in `exec` mode.
   DISABLE_UPDATES: "1"
   DISABLE_AUTOUPDATER: "1"
   PYTHONPATH: ${{ github.workspace }}/ctl/.autose
@@ -87,6 +88,14 @@ jobs:
       head_sha: ${{ steps.build.outputs.head_sha }}
       spent_usd: ${{ steps.build.outputs.spent_usd }}
     steps:
+      - name: Require the CODEX_AUTH_JSON secret (only its presence is exposed here)
+        env:
+          HAS_CODEX_AUTH: ${{ secrets.CODEX_AUTH_JSON != '' }}
+        run: |
+          if [ "$HAS_CODEX_AUTH" != "true" ]; then
+            echo "::error::Repository secret CODEX_AUTH_JSON is missing or empty (see README: Maintainer setup)."
+            exit 1
+          fi
       - name: Job deadline for the orchestrator (ADR-009)
         run: echo "AUTOSE_JOB_DEADLINE=$(( $(date +%s) + 60*60 ))" >> "$GITHUB_ENV"
       - name: Checkout AutoSE code (default branch only)
@@ -111,8 +120,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install pinned Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code@2.1.331
+      - name: Install pinned Codex CLI
+        run: npm install -g @openai/codex@0.172.0
       - name: Sandbox prerequisites
         if: vars.AUTOSE_SANDBOX == '1'
         run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
@@ -122,7 +131,8 @@ jobs:
         run: python -m autose build --phase prepare --issue "${{ needs.gate.outputs.issue }}" --repo-dir work
       - name: Agents S1-S4 (NO GitHub token in this step)
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          AUTOSE_BACKEND: codex
           AUTOSE_PYTHON: python
           AUTOSE_SANDBOX: ${{ vars.AUTOSE_SANDBOX }}
           AUTOSE_MODEL_ANALYST: ${{ vars.AUTOSE_MODEL_ANALYST }}
@@ -130,7 +140,20 @@ jobs:
           AUTOSE_MODEL_ARCHITECT: ${{ vars.AUTOSE_MODEL_ARCHITECT }}
           AUTOSE_MODEL_DEVELOPER: ${{ vars.AUTOSE_MODEL_DEVELOPER }}
           AUTOSE_MODEL_TESTER: ${{ vars.AUTOSE_MODEL_TESTER }}
-        run: python -m autose build --phase agent --issue "${{ needs.gate.outputs.issue }}" --repo-dir work
+        run: |
+          if [ -z "$CODEX_AUTH_JSON" ]; then
+            echo "::error::CODEX_AUTH_JSON secret is empty; cannot authenticate the codex CLI."
+            exit 1
+          fi
+          install -d -m 700 "$RUNNER_TEMP/codex-home"
+          (umask 077 && printf '%s' "$CODEX_AUTH_JSON" > "$RUNNER_TEMP/codex-home/auth.json")
+          chmod 600 "$RUNNER_TEMP/codex-home/auth.json"
+          unset CODEX_AUTH_JSON
+          export CODEX_HOME="$RUNNER_TEMP/codex-home"
+          python -m autose build --phase agent --issue "${{ needs.gate.outputs.issue }}" --repo-dir work
+      - name: Remove the Codex login
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/codex-home"
       - name: Publish S5 (token; final allowlist gate, push, PR, labels, status)
         id: build
         if: ${{ !cancelled() }}
@@ -168,7 +191,7 @@ jobs:
       state_artifact: ""
       spent_usd: ${{ needs.build.outputs.spent_usd || '0' }}
     secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
 
   round2:
     needs: [gate, build, round1]
@@ -191,7 +214,7 @@ jobs:
       final: false
       state_artifact: autose-issue${{ needs.gate.outputs.issue }}-build
     secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
 
   round3:
     needs: [gate, build, round2]
@@ -214,7 +237,7 @@ jobs:
       final: true   # after the 2nd send-back the review is final; a human decides (ADR-013)
       state_artifact: autose-issue${{ needs.gate.outputs.issue }}-r2-rework
     secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
 
   finalize:
     needs: [gate, build, round1, round2, round3]
@@ -246,7 +269,7 @@ jobs:
           --verdicts "${{ needs.round1.outputs.verdict }},${{ needs.round2.outputs.verdict }},${{ needs.round3.outputs.verdict }}"
 
   canary:
-    # Manual, cheap harness checks before the first real run (DESIGN §10.1). Calls the API.
+    # Manual, cheap harness checks before the first real run (DESIGN §10.1). Uses the ChatGPT subscription.
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -266,16 +289,41 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install pinned Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code@2.1.331
+      - name: Install pinned Codex CLI
+        run: npm install -g @openai/codex@0.172.0
       - name: Sandbox prerequisites
         if: inputs.sandbox
         run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
-      - name: Run canaries
+      - name: Run canaries (codex smoke call, then harness checks)
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          AUTOSE_BACKEND: codex
+          AUTOSE_MODEL_CANARY: ${{ vars.AUTOSE_MODEL_CANARY }}
           AUTOSE_SANDBOX: ${{ inputs.sandbox && '1' || '' }}
-        run: python -m autose --home autose-home canary
+        run: |
+          if [ -z "$CODEX_AUTH_JSON" ]; then
+            echo "::error::Repository secret CODEX_AUTH_JSON is missing or empty (see README: Maintainer setup)."
+            exit 1
+          fi
+          install -d -m 700 "$RUNNER_TEMP/codex-home"
+          (umask 077 && printf '%s' "$CODEX_AUTH_JSON" > "$RUNNER_TEMP/codex-home/auth.json")
+          chmod 600 "$RUNNER_TEMP/codex-home/auth.json"
+          unset CODEX_AUTH_JSON
+          export CODEX_HOME="$RUNNER_TEMP/codex-home"
+          mkdir -p autose-home
+          canary_dir="$(mktemp -d)"
+          printf '%s' '{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}' \
+            > "$canary_dir/schema.json"
+          codex --version
+          codex exec --ephemeral -s read-only --skip-git-repo-check -C "$canary_dir" \
+            --output-schema "$canary_dir/schema.json" -o autose-home/codex-smoke.json \
+            "What is 2+2? Put only the digits in answer." < /dev/null
+          python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["answer"].strip()=="4", d; print("codex smoke OK:", d)' \
+            autose-home/codex-smoke.json
+          python -m autose --home autose-home canary
+      - name: Remove the Codex login
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/codex-home"
       - if: always()
         uses: actions/upload-artifact@v4
         with:

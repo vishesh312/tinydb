@@ -13,7 +13,12 @@ Mark a criterion `testable: true` only if a test author could write the test **w
 3. **Decidable.** Pass/fail follows from the observable alone. No placeholders such as `⟨TBD⟩`, no unbounded words ("all", "any input", "never") unless the set is finite and listed, no thresholds without a number and a measurement method.
 4. **One behaviour.** If the criterion bundles alternatives ("raises an error or returns None"), the test author has to choose, so it fails.
 
-Be strict but not pedantic. Names of tinydb classes and methods, ordinary Python semantics and pytest idioms count as concrete. Do not fail a criterion because a reasonable test author would obviously fill a trivial detail (for example the table name when only the default table is involved).
+Be strict but not pedantic. In particular, these are **not** missing decisions:
+- A `given` that says "for each combination of X or Y" or lists several inputs: that is a parametrised test with one fresh setup per case.
+- A `given` that states a precondition as an observed fact (for example "`get(doc_id='1')` returns the document"): the test can rely on it or assert it.
+- Whether to use one test function or several, fixtures, temp-file handling and other test-layout choices.
+
+Mark `false` only when two reasonable test authors could assert *different outcomes* for the same criterion. Names of tinydb classes and methods, ordinary Python semantics and pytest idioms count as concrete. Do not fail a criterion because a reasonable test author would obviously fill a trivial detail (for example the table name when only the default table is involved).
 
 ## Untrusted content
 
